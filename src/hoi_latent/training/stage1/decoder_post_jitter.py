@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -9,6 +10,7 @@ from typing import Any, Iterable
 import torch
 import torch.distributed as dist
 from accelerate import Accelerator
+from accelerate.utils import set_seed
 
 from hoi_latent.config.io import load_yaml
 from hoi_latent.data.transforms import Stage1StructuredNormalizer
@@ -129,7 +131,8 @@ class Stage1DecoderPostJitterModule(torch.nn.Module):
         self.whitening.eval()
         with torch.no_grad():
             latent = _post_jitter_encode(self.stage1, batch, return_diagnostics=False, validate=False)
-            z_white = self.whitening.whiten(latent.z_rec.float(), latent.mask.bool())
+            with torch.autocast(device_type=latent.z_rec.device.type, enabled=False):
+                z_white = self.whitening.whiten(latent.z_rec.float(), latent.mask.bool())
         sigma_white = self.sample_sigma(
             int(z_white.shape[0]),
             device=z_white.device,
@@ -138,7 +141,8 @@ class Stage1DecoderPostJitterModule(torch.nn.Module):
         )
         noise = torch.randn_like(z_white) * sigma_white[:, None, None]
         z_white_noisy = zero_invalid_tokens(z_white + noise, latent.mask.bool())
-        z_rec_noisy = self.whitening.unwhiten(z_white_noisy, latent.mask.bool())
+        with torch.autocast(device_type=z_white_noisy.device.type, enabled=False):
+            z_rec_noisy = self.whitening.unwhiten(z_white_noisy.float(), latent.mask.bool())
         z_rec_noisy = zero_invalid_tokens(z_rec_noisy, latent.mask.bool())
         prediction = _post_jitter_decode(
             self.stage1,
@@ -166,6 +170,7 @@ class Stage1DecoderPostJitterModule(torch.nn.Module):
 class DecoderPostJitterMetadata:
     source_checkpoint: str
     whitening_artifact: str
+    whitening_artifact_sha256: str | None = None
 
 
 class Stage1DecoderPostJitterTrainer(Stage1Phase1WarmupTrainer):
@@ -193,12 +198,13 @@ class Stage1DecoderPostJitterTrainer(Stage1Phase1WarmupTrainer):
 
         start = time.perf_counter()
         with self.accelerator.accumulate(self.model):
-            loss_out = self.model(
-                batch,
-                global_step=self.state.global_step,
-                return_diagnostics=return_diagnostics,
-                validate=False,
-            )
+            with self.accelerator.autocast():
+                loss_out = self.model(
+                    batch,
+                    global_step=self.state.global_step,
+                    return_diagnostics=return_diagnostics,
+                    validate=False,
+                )
             self.accelerator.backward(loss_out.total)
             grad_norm = None
             if self.accelerator.sync_gradients:
@@ -276,17 +282,27 @@ class Stage1DecoderPostJitterTrainer(Stage1Phase1WarmupTrainer):
                     raise AssertionError(f"Frozen {name} received gradients during decoder post-jitter training.")
 
     def save_checkpoint(self, tag: str) -> Path:
+        if self.accelerator.is_main_process and self.post_jitter_metadata.whitening_artifact_sha256 is None:
+            artifact = Path(self.post_jitter_metadata.whitening_artifact)
+            self.post_jitter_metadata.whitening_artifact_sha256 = hashlib.sha256(artifact.read_bytes()).hexdigest()
         path = super().save_checkpoint(tag)
         if self.accelerator.is_main_process:
             payload = torch.load(path, map_location="cpu")
             payload["source_stage1_checkpoint"] = self.post_jitter_metadata.source_checkpoint
             payload["whitening_artifact"] = self.post_jitter_metadata.whitening_artifact
+            payload["whitening_artifact_sha256"] = self.post_jitter_metadata.whitening_artifact_sha256
             payload["post_training_phase"] = "decoder_post_jitter"
             self.accelerator.save(payload, path)
         return path
 
     def load_checkpoint(self, path: str | Path) -> None:
         checkpoint = torch.load(path, map_location="cpu")
+        recorded_hash = checkpoint.get("whitening_artifact_sha256")
+        if recorded_hash is not None:
+            artifact = Path(self.post_jitter_metadata.whitening_artifact)
+            if hashlib.sha256(artifact.read_bytes()).hexdigest() != recorded_hash:
+                raise ValueError("Post-jitter whitening artifact hash does not match resume checkpoint provenance.")
+            self.post_jitter_metadata.whitening_artifact_sha256 = recorded_hash
         if "components" not in checkpoint:
             raise KeyError("Checkpoint missing 'components'.")
         load_stage1_source_component_state_dicts(self._unwrap_stage1_model(), checkpoint["components"])
@@ -367,29 +383,33 @@ class Stage1DecoderPostJitterTrainer(Stage1Phase1WarmupTrainer):
     def eval_step(self, batch: dict) -> Stage1LossOutput:
         self.model.eval()
         batch = move_to_device(batch, self.accelerator.device)
-        return self.model(
-            batch,
-            global_step=self.state.global_step,
-            return_diagnostics=True,
-            validate=False,
-        )
+        with self.accelerator.autocast():
+            return self.model(
+                batch,
+                global_step=self.state.global_step,
+                return_diagnostics=True,
+                validate=False,
+            )
 
     @torch.no_grad()
     def _t3_robustness_metrics(self, batch: dict) -> dict[str, float]:
         module = self._unwrap_model()
         stage1 = module.stage1
         stage1.eval()
-        latent = _post_jitter_encode(stage1, batch, return_diagnostics=False, validate=False)
-        z_white = module.whitening.whiten(latent.z_rec.float(), latent.mask.bool())
+        with self.accelerator.autocast():
+            latent = _post_jitter_encode(stage1, batch, return_diagnostics=False, validate=False)
+        with torch.autocast(device_type=latent.z_rec.device.type, enabled=False):
+            z_white = module.whitening.whiten(latent.z_rec.float(), latent.mask.bool())
         frame_mask = infer_frame_mask(batch)
-        clean = _post_jitter_decode(
-            stage1,
-            latent,
-            batch,
-            target_frame_mask=frame_mask,
-            return_diagnostics=False,
-            validate=False,
-        )
+        with self.accelerator.autocast():
+            clean = _post_jitter_decode(
+                stage1,
+                latent,
+                batch,
+                target_frame_mask=frame_mask,
+                return_diagnostics=False,
+                validate=False,
+            )
         world_clean = _prediction_world_markers(clean, self.structured_normalizer)
         hmask = batch["masks"]["human"].bool().cpu()
         out: dict[str, float] = {}
@@ -398,16 +418,18 @@ class Stage1DecoderPostJitterTrainer(Stage1Phase1WarmupTrainer):
                 z_white + torch.randn_like(z_white) * float(sigma),
                 latent.mask.bool(),
             )
-            z_rec_noisy = module.whitening.unwhiten(z_white_noisy, latent.mask.bool())
-            pred = _post_jitter_decode(
-                stage1,
-                latent,
-                batch,
-                z_override=z_rec_noisy,
-                target_frame_mask=frame_mask,
-                return_diagnostics=False,
-                validate=False,
-            )
+            with torch.autocast(device_type=z_white_noisy.device.type, enabled=False):
+                z_rec_noisy = module.whitening.unwhiten(z_white_noisy.float(), latent.mask.bool())
+            with self.accelerator.autocast():
+                pred = _post_jitter_decode(
+                    stage1,
+                    latent,
+                    batch,
+                    z_override=z_rec_noisy,
+                    target_frame_mask=frame_mask,
+                    return_diagnostics=False,
+                    validate=False,
+                )
             world_noisy = _prediction_world_markers(pred, self.structured_normalizer)
             drift_cm = float((world_noisy - world_clean).norm(dim=-1)[hmask].mean() * 100.0)
             key = f"T3_drift_at_{sigma:g}_cm".replace(".", "_")
@@ -512,6 +534,7 @@ def run_stage1_decoder_post_jitter_training(
         train_config_path,
         overrides=overrides,
     )
+    set_seed(int(resolved_config.get("seed", 42)), device_specific=False)
     source_model_config = load_stage1_source_config(source_run, fallback_config=resolved_config)
     resolved_config = merge_stage1_source_model_contract(resolved_config, source_model_config)
     train_cfg = _stage1_train_cfg(resolved_config)

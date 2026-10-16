@@ -6,9 +6,9 @@ from typing import Any
 import torch
 import torch.distributed as dist
 from accelerate import Accelerator, DistributedDataParallelKwargs
+from accelerate.utils import set_seed
 
 from hoi_latent.ablations.stage1_architecture import (
-    ArchitectureAblationMetadataReporter,
     build_stage1_architecture_ablation_from_config,
     count_parameters,
 )
@@ -106,6 +106,7 @@ def run_stage1_architecture_ablation_training(
         train_config_path,
         overrides=overrides,
     )
+    set_seed(int(resolved_config.get("seed", 42)), device_specific=False)
     train_cfg = _stage1_train_cfg(resolved_config)
     wandb_cfg = train_cfg.get("wandb", {})
     wandb_enabled = bool(wandb_cfg.get("enabled", True)) and wandb_cfg.get("mode", "online") != "disabled"
@@ -286,27 +287,13 @@ def freeze_inactive_stage1_architecture_ablation_parameters(model: torch.nn.Modu
 def build_stage1_architecture_ablation_metadata(model: torch.nn.Module, config: dict) -> dict[str, Any]:
     resolved = getattr(model, "stage1_architecture_resolved_config", config)
     variant = str(getattr(model, "stage1_architecture_variant", _variant_name_from_config(resolved)))
-    reporter = ArchitectureAblationMetadataReporter()
-    n_variant, z_dim_variant = _latent_shape_for_metadata(model, resolved)
-    flat_like = hasattr(model, "n_flat") and hasattr(model, "z_dim")
-    metadata = reporter.report(
-        model,
-        variant_name=variant,
-        n_variant=n_variant,
-        z_dim_variant=z_dim_variant,
-        input_token_count_before_compression=_input_token_count_for_metadata(model) if flat_like else None,
-        decoder_memory_token_count=n_variant if flat_like else None,
-        decoder_output_query_count=_decoder_output_query_count_for_metadata(model, resolved) if flat_like else None,
-        route_decoupling=_route_decoupling_for_metadata(variant),
-        calibration=_calibration_result_from_config(resolved, variant),
-        extra={
-            "trainable_params": count_parameters(model, trainable_only=True),
-            "model_class": type(model).__name__,
-            "ablation_config": resolved.get("ablation", {}),
-            "module_summary": _module_summary_for_metadata(model),
-        },
-    )
-    return metadata
+    return {
+        "variant_name": variant,
+        "variant_params": count_parameters(model),
+        "trainable_params": count_parameters(model, trainable_only=True),
+        "model_class": type(model).__name__,
+        "module_summary": _module_summary_for_metadata(model),
+    }
 
 
 def write_stage1_architecture_ablation_wandb_document(
@@ -352,76 +339,7 @@ def _variant_name_from_config(config: dict) -> str:
     return variant
 
 
-def _latent_shape_for_metadata(model: torch.nn.Module, config: dict) -> tuple[int, int]:
-    if hasattr(model, "n_flat") and hasattr(model, "z_dim"):
-        return int(getattr(model, "n_flat")), int(getattr(model, "z_dim"))
-    if hasattr(model, "n_latent") and hasattr(model, "z_dim"):
-        return int(getattr(model, "n_latent")), int(getattr(model, "z_dim"))
-    cap = config.get("ablation", {}).get("no_routing", {}).get("latent_capacity", {})
-    return int(cap.get("n_latent", 708)), int(cap.get("z_dim", 16))
-
-
-def _input_token_count_for_metadata(model: torch.nn.Module) -> int | None:
-    max_seq_len = getattr(model, "max_seq_len", None)
-    num_geometry_tokens = getattr(model, "num_geometry_tokens", None)
-    if max_seq_len is None or num_geometry_tokens is None:
-        return None
-    return int(max_seq_len) + int(num_geometry_tokens)
-
-
-def _decoder_output_query_count_for_metadata(model: torch.nn.Module, config: dict) -> int | None:
-    max_seq_len = getattr(model, "max_seq_len", None)
-    if max_seq_len is not None:
-        return int(max_seq_len)
-    return config.get("data", {}).get("window_size")
-
-
-def _route_decoupling_for_metadata(variant: str) -> str | None:
-    if variant == "full_mot_reference":
-        return "production_ffn_only"
-    if variant in {"no_routing_compute_matched", "no_routing_param_matched"}:
-        return "removed_routed_ffn_shared_ln_shared_ffn"
-    if variant == "flat_compressed_transformer_ae":
-        return "flat_shared_transformer_no_substreams"
-    if variant == "no_explicit_relation_param_matched":
-        return "ffn_only_human_object_geometry_no_explicit_relation"
-    return None
-
-
-def _calibration_result_from_config(config: dict, variant: str) -> Any | None:
-    ablation_cfg = config.get("ablation", {})
-    if variant in {"no_routing_compute_matched", "no_routing_param_matched"}:
-        return ablation_cfg.get("no_routing", {}).get("calibration_result")
-    if variant == "flat_compressed_transformer_ae":
-        return ablation_cfg.get("flat_compressed_transformer_ae", {}).get("calibration_result")
-    return None
-
-
 def _module_summary_for_metadata(model: torch.nn.Module) -> dict[str, Any]:
-    if hasattr(model, "n_flat") and hasattr(model, "z_dim"):
-        return {
-            "encoder_depth": getattr(getattr(model, "encoder", None), "depth", None),
-            "decoder_depth": getattr(getattr(getattr(model, "decoder", None), "stack", None), "depth", None),
-            "ffn_hidden_dim": getattr(getattr(model, "encoder", None), "ffn_hidden_dim", None),
-            "n_flat": int(getattr(model, "n_flat")),
-            "z_dim": int(getattr(model, "z_dim")),
-            "latent_capacity": int(getattr(model, "latent_capacity")),
-        }
-    if hasattr(model, "n_latent") and hasattr(model, "replacement_human_body_slots"):
-        encoder_joint = getattr(getattr(model, "encoder", None), "joint_encoder", None)
-        decoder_joint = getattr(getattr(model, "decoder", None), "joint_stack", None)
-        return {
-            "encoder_joint_depth": getattr(encoder_joint, "depth", None),
-            "encoder_ffn_hidden_dim": getattr(encoder_joint, "ffn_hidden_dim", None),
-            "decoder_joint_depth": getattr(decoder_joint, "depth", None),
-            "decoder_ffn_hidden_dim": getattr(decoder_joint, "ffn_hidden_dim", None),
-            "n_latent": int(getattr(model, "n_latent")),
-            "z_dim": int(getattr(model, "z_dim")),
-            "latent_capacity": int(getattr(model, "latent_capacity")),
-            "original_human_body_slots": int(getattr(model, "original_human_body_slots")),
-            "replacement_human_body_slots": int(getattr(model, "replacement_human_body_slots")),
-            "explicit_relation_branch": False,
-        }
     encoder_joint = getattr(getattr(model, "encoder", None), "joint_encoder", None)
     decoder_joint = getattr(getattr(model, "decoder", None), "joint_stack", None)
     return {

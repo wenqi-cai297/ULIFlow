@@ -15,6 +15,7 @@ from typing import Any, Iterable
 import torch
 import torch.distributed as dist
 from accelerate import Accelerator, DistributedDataParallelKwargs
+from accelerate.utils import set_seed
 from torch.utils.data import DataLoader, Subset
 
 from hoi_latent.config.io import load_yaml, save_yaml
@@ -362,6 +363,7 @@ def run_stage1_phase1_warmup_training(
         train_config_path,
         overrides=overrides,
     )
+    set_seed(int(resolved_config.get("seed", 42)), device_specific=False)
     train_cfg = _stage1_train_cfg(resolved_config)
     wandb_cfg = train_cfg.get("wandb", {})
     wandb_enabled = bool(wandb_cfg.get("enabled", True)) and wandb_cfg.get("mode", "online") != "disabled"

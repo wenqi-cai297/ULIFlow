@@ -1,6 +1,12 @@
 from __future__ import annotations
 
+import importlib
+import random
+
+import numpy as np
+import pytest
 import torch
+from accelerate.utils import set_seed
 
 from hoi_latent.losses.stage1 import Stage1LossOutput, Stage1Phase1WarmupLoss
 from hoi_latent.models.stage1 import build_stage1_autoencoder_from_config
@@ -92,6 +98,45 @@ def test_apply_cli_overrides_sets_nested_paths_and_skips_none():
     assert out["training"]["stage1"]["run_name"] == "r1"
     assert out["training"]["stage1"]["max_steps"] == 10  # None override is ignored
     assert "optimizer" not in config["training"]["stage1"]  # input not mutated
+
+
+@pytest.mark.parametrize(
+    "module_name,entry_name,loader_name,needs_source",
+    [
+        ("hoi_latent.training.stage1.phase1_warmup", "run_stage1_phase1_warmup_training", "load_phase1_training_config", False),
+        ("hoi_latent.training.ablations.stage1_architecture", "run_stage1_architecture_ablation_training", "load_phase1_training_config", False),
+        ("hoi_latent.training.stage1.decoder_post_jitter", "run_stage1_decoder_post_jitter_training", "load_decoder_post_jitter_training_config", True),
+        ("hoi_latent.training.stage2.rectified_flow", "run_stage2_rectified_flow_training", "load_stage2_rectified_flow_training_config", True),
+    ],
+)
+def test_training_entries_seed_before_setup_with_common_rank_seed(
+    monkeypatch, module_name, entry_name, loader_name, needs_source
+):
+    module = importlib.import_module(module_name)
+    monkeypatch.setattr(module, loader_name, lambda *args, **kwargs: ({}, {}, {"seed": kwargs["overrides"]["seed"]}))
+    observed = []
+
+    class SeededBeforeSetup(Exception):
+        pass
+
+    def capture_seed(seed, *, device_specific):
+        assert seed == 123
+        assert device_specific is False
+        set_seed(seed, device_specific=device_specific)
+        observed.append((random.random(), float(np.random.rand()), torch.rand(4)))
+        raise SeededBeforeSetup
+
+    monkeypatch.setattr(module, "set_seed", capture_seed)
+    kwargs = {"data_config_path": "unused", "train_config_path": "unused", "overrides": {"seed": 123}}
+    if needs_source:
+        kwargs.update(source_run="unused", whitening_path="unused")
+    for rank in (0, 1):
+        monkeypatch.setenv("LOCAL_RANK", str(rank))
+        monkeypatch.setenv("RANK", str(rank))
+        with pytest.raises(SeededBeforeSetup):
+            getattr(module, entry_name)(**kwargs)
+    assert observed[0][:2] == observed[1][:2]
+    assert torch.equal(observed[0][2], observed[1][2])
 
 
 def _make_structured_batch() -> dict:

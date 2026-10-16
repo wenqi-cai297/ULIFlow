@@ -1,10 +1,7 @@
 # Merge with configs/stage1/data_interact_motion962_all_v0.yaml.
-# Variant A / Ours: production MoT tokenizer/encoder/decoder layout with
-# Refiner removed. This is the reference/control row for B/C architecture
-# ablations and should be trained with the same loss, optimizer, schedule,
-# logging, and checkpoint protocol as the ablation variants.
+# Core MoT tokenizer, encoder, and decoder configuration.
 loader:
-  batch_size: 8
+  batch_size: 6
   num_workers: 0
   pin_memory: false
   persistent_workers: false
@@ -70,15 +67,3 @@ loss:
 ablation:
   name: stage1_architecture
   variant: full_mot_reference
-  full_mot_reference:
-    role: reference_control
-    architecture: production_mot_no_refiner
-    tokenizer: production
-    encoder: production_mot_ffn_only
-    decoder: production
-    refiner: removed
-    route_decoupling: ffn_only
-    latent_capacity:
-      n_latent: 708
-      z_dim: 16
-      capacity: 11328

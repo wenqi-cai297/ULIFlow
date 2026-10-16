@@ -1,5 +1,5 @@
 # Merge with the same data config used by train_full_mot_reference_v0.yaml.
-# Decoder-only post-train for Variant A / Ours:
+# Decoder-only post-training:
 #   frozen tokenizer + encoder
 #   whitened latent jitter
 #   decoder optimized with reconstruction + human/object finite-difference smooth losses
@@ -88,11 +88,3 @@ loss:
 ablation:
   name: stage1_architecture
   variant: full_mot_reference
-  full_mot_reference:
-    role: reference_control_post_train
-    architecture: production_mot_no_refiner
-    tokenizer: frozen_production
-    encoder: frozen_production_mot_ffn_only
-    decoder: post_trained_with_whitened_latent_jitter
-    refiner: removed
-    route_decoupling: ffn_only

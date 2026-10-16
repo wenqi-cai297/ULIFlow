@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import json
 import math
-import textwrap
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import numpy as np
@@ -492,91 +489,6 @@ def rot6d_to_matrix_np(rot6d: np.ndarray, eps: float = 1.0e-8) -> np.ndarray:
     return np.stack([b1, b2, b3], axis=-2).astype(np.float32, copy=False)
 
 
-def map_xyz_for_render(points: np.ndarray) -> np.ndarray:
-    points = np.asarray(points)
-    if points.shape[-1] != 3:
-        raise ValueError(f"points last dimension must be 3, got {points.shape}.")
-    return np.stack([points[..., 0], points[..., 2], points[..., 1]], axis=-1)
-
-
-def render_stage2_marker_comparison_mp4(
-    *,
-    generated: Stage2WorldRenderArrays,
-    gt: Stage2WorldRenderArrays | None,
-    condition_text: str,
-    video_path: str | Path,
-    first_frame_path: str | Path | None = None,
-    fps: int = 30,
-    stride: int = 1,
-    dpi: int = 110,
-    metadata: Mapping[str, Any] | None = None,
-) -> None:
-    import cv2
-    import matplotlib
-
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    video_path = Path(video_path)
-    video_path.parent.mkdir(parents=True, exist_ok=True)
-    first_path = Path(first_frame_path) if first_frame_path is not None else video_path.with_suffix(".frame000.png")
-    frame_mask = generated.frame_mask[0] if generated.frame_mask.ndim == 2 else generated.frame_mask
-    frame_indices = np.where(frame_mask.astype(bool))[0]
-    if frame_indices.size == 0:
-        frame_indices = np.arange(generated.human_markers.shape[1])
-    frame_indices = frame_indices[:: max(1, int(stride))]
-    bounds = _render_bounds(generated, gt, frame_indices)
-    has_gt = gt is not None
-    fig = plt.figure(figsize=(12.8 if has_gt else 6.4, 5.4), dpi=dpi)
-    writer = None
-    try:
-        for out_idx, frame_idx in enumerate(frame_indices):
-            fig.clf()
-            panel_count = 2 if has_gt else 1
-            if has_gt:
-                ax_gt = fig.add_subplot(1, panel_count, 1, projection="3d")
-                _draw_marker_scene(
-                    ax_gt,
-                    gt.human_markers[0, frame_idx],
-                    gt.object_points[0, frame_idx],
-                    title=f"GT | frame {int(frame_idx)}",
-                    bounds=bounds,
-                )
-                ax_pred = fig.add_subplot(1, panel_count, 2, projection="3d")
-            else:
-                ax_pred = fig.add_subplot(1, panel_count, 1, projection="3d")
-            _draw_marker_scene(
-                ax_pred,
-                generated.human_markers[0, frame_idx],
-                generated.object_points[0, frame_idx],
-                title=f"Generated | frame {int(frame_idx)}",
-                bounds=bounds,
-            )
-            title = _render_title(condition_text, metadata)
-            fig.suptitle(title, fontsize=8, y=0.98)
-            fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.86))
-            frame = _figure_to_rgb(fig)
-            if writer is None:
-                height, width = frame.shape[:2]
-                fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                writer = cv2.VideoWriter(str(video_path), fourcc, float(fps), (width, height))
-                if not writer.isOpened():
-                    raise RuntimeError(f"Could not open video writer for {video_path}.")
-            writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-            if out_idx == 0:
-                cv2.imwrite(str(first_path), cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
-    finally:
-        if writer is not None:
-            writer.release()
-        plt.close(fig)
-
-
-def write_stage2_render_summary(path: str | Path, payload: Mapping[str, Any]) -> None:
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(_jsonable(payload), indent=2, sort_keys=True), encoding="utf-8")
-
-
 def _allocate_stitched_group(group: Mapping[str, torch.Tensor], total_frames: int) -> dict[str, torch.Tensor]:
     out = {}
     for key, value in group.items():
@@ -719,95 +631,9 @@ def _normalize_np(value: np.ndarray, *, eps: float) -> np.ndarray:
     return value / np.maximum(denom, eps)
 
 
-def _render_bounds(
-    generated: Stage2WorldRenderArrays,
-    gt: Stage2WorldRenderArrays | None,
-    frame_indices: np.ndarray,
-    *,
-    min_radius: float = 1.0,
-) -> tuple[np.ndarray, np.ndarray]:
-    sets = [
-        generated.human_markers[0, frame_indices].reshape(-1, 3),
-        generated.object_points[0, frame_indices].reshape(-1, 3),
-    ]
-    if gt is not None:
-        sets.extend(
-            [
-                gt.human_markers[0, frame_indices].reshape(-1, 3),
-                gt.object_points[0, frame_indices].reshape(-1, 3),
-            ]
-        )
-    mapped = []
-    for points in sets:
-        finite = points[np.isfinite(points).all(axis=-1)]
-        if finite.size:
-            mapped.append(map_xyz_for_render(finite))
-    if not mapped:
-        return np.array([-1.0, -1.0, -1.0]), np.array([1.0, 1.0, 1.0])
-    pts = np.concatenate(mapped, axis=0)
-    lo = pts.min(axis=0)
-    hi = pts.max(axis=0)
-    center = (lo + hi) * 0.5
-    radius = max(float(np.max(hi - lo) * 0.58), float(min_radius))
-    return center - radius, center + radius
-
-
-def _draw_marker_scene(ax, human: np.ndarray, object_points: np.ndarray, *, title: str, bounds: tuple[np.ndarray, np.ndarray]) -> None:
-    h = map_xyz_for_render(human)
-    o = map_xyz_for_render(object_points)
-    ax.scatter(o[:, 0], o[:, 1], o[:, 2], c="#f97316", s=5, depthshade=False, alpha=0.85)
-    ax.scatter(h[:, 0], h[:, 1], h[:, 2], c="#2563eb", s=10, depthshade=False)
-    root = h.mean(axis=0)
-    ax.scatter([root[0]], [root[1]], [root[2]], c="#111827", s=24, depthshade=False)
-    lo, hi = bounds
-    ax.set_xlim(float(lo[0]), float(hi[0]))
-    ax.set_ylim(float(lo[1]), float(hi[1]))
-    ax.set_zlim(float(lo[2]), float(hi[2]))
-    span = hi - lo
-    ax.set_box_aspect((float(span[0]), float(span[1]), float(span[2])))
-    ax.set_title(title, fontsize=9)
-    ax.set_axis_off()
-    ax.view_init(elev=18.0, azim=-68.0)
-
-
-def _figure_to_rgb(fig) -> np.ndarray:
-    fig.canvas.draw()
-    rgba = np.asarray(fig.canvas.buffer_rgba())
-    return np.ascontiguousarray(rgba[..., :3])
-
-
-def _render_title(condition_text: str, metadata: Mapping[str, Any] | None) -> str:
-    text = str(condition_text) if condition_text else "<empty condition text>"
-    if len(text) > 160:
-        text = text[:157] + "..."
-    condition = textwrap.fill(text, width=78)
-    meta_parts = []
-    if metadata:
-        for key in ("sequence_name", "requested_frames", "seed", "solver", "steps_per_block", "guidance"):
-            if key in metadata and metadata[key] is not None:
-                meta_parts.append(f"{key}={metadata[key]}")
-    if not meta_parts:
-        return condition
-    return condition + "\n" + textwrap.fill(" | ".join(meta_parts), width=96)
-
-
 def _window_blocks(spec: Stage2InferenceLatentTemplateSpec) -> int:
     return int(math.ceil(float(spec.anchors_per_window) / float(spec.block_size_anchors)))
 
 
 def _block_size_frames(spec: Stage2InferenceLatentTemplateSpec) -> int:
     return int(spec.anchor_stride_frames) * int(spec.block_size_anchors)
-
-
-def _jsonable(value: Any) -> Any:
-    if isinstance(value, torch.Tensor):
-        return value.detach().cpu().tolist()
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, Mapping):
-        return {str(key): _jsonable(val) for key, val in value.items()}
-    if isinstance(value, (list, tuple)):
-        return [_jsonable(item) for item in value]
-    if isinstance(value, (np.integer, np.floating)):
-        return value.item()
-    return value

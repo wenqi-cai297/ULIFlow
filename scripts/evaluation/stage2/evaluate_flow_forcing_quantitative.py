@@ -178,7 +178,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--stage1-anchor-stride", type=int, default=4)
     parser.add_argument("--stage1-anchor-grid-origin", type=int, default=0)
-    parser.add_argument("--feature-evaluator-mode", choices=["official_artifact", "repo_trained", "disabled"], default="official_artifact")
+    parser.add_argument("--feature-evaluator-mode", choices=["official_artifact", "disabled"], default="official_artifact")
     parser.add_argument("--feature-artifact-root", type=Path, default=Path("assets/evaluation/interact_markersbps"))
     parser.add_argument("--feature-evaluator-ckpt", type=Path, default=None)
     parser.add_argument("--feature-state-dict", type=Path, default=None)
@@ -869,8 +869,6 @@ def _synchronize_if_cuda(device: torch.device) -> None:
 
 
 def _build_feature_evaluator(args: argparse.Namespace):
-    if args.feature_evaluator_mode == "repo_trained":
-        raise InterActFeatureEvaluatorUnavailable("repo_trained feature evaluator mode is not implemented yet.")
     defaults = default_interact_feature_artifact_paths(args.feature_artifact_root)
     paths = InterActFeatureArtifactPaths(
         checkpoint=args.feature_evaluator_ckpt or defaults.checkpoint,

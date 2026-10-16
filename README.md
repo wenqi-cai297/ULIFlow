@@ -4,7 +4,7 @@ ULIFlow generates variable-length human-object interaction motion from text and 
 
 ## Requirements
 
-- Linux, Python 3.10, and a CUDA-compatible PyTorch installation for training. The supplied environment pins PyTorch 2.7.1 with CUDA 12.8 wheels; adapt the CUDA wheel to your driver if needed.
+- Linux, Python 3.10, and a BF16-capable NVIDIA GPU for the supplied training configs. The supplied environment pins PyTorch 2.7.1 with CUDA 12.8 wheels; adapt the CUDA wheel to your driver if needed.
 - The processed InterAct motion-962 dataset with text, object sample points, and object BPS features. Obtain the dataset and any required processing tools under their respective terms. The expected layout is `data/InterAct_official_combination/<dataset>/sequences_canonical/<sequence>/motion.npy`, alongside `text.txt` and `object.npz`, plus `<dataset>/objects/<object>/sample_points.npy` and `<dataset>/objects_bps/<object>/<object>_1024.npy`.
 - Access to `google/flan-t5-xl` through Hugging Face for Stage 2. Its weights are downloaded separately by Transformers.
 
@@ -20,7 +20,7 @@ Set `data.root` in `configs/stage1/data_interact_motion962_all_v0.yaml` to your 
 
 ## Train
 
-The following commands reproduce the released full-MoT configuration. Run them in order from the repository root. Choose `--num_processes` for the GPUs actually available; changing batch size or accumulation changes the optimization setup. The commands below use the values in the configs unless an override is shown.
+The following commands reproduce the released full-MoT configuration. Run them in order from the repository root. The examples use three GPUs. For one GPU, replace `accelerate launch --multi_gpu --num_processes 3` with `accelerate launch --num_processes 1` in each training command. For two or more GPUs, keep `--multi_gpu` and set the process count accordingly. Changing the GPU count, batch size, or accumulation changes the effective batch size. The autoencoder and decoder post-training use batch size 6 and accumulation 1 per GPU; the flow model uses batch size 16 and accumulation 2.
 
 ```bash
 DATA_CONFIG=configs/stage1/data_interact_motion962_all_v0.yaml
@@ -55,7 +55,7 @@ The whitening command fits on training records and verifies the decoder round tr
 
 ## Generate
 
-This entry point takes the text and object geometry from one InterAct record, then samples the requested duration. It uses the record's encoded latent **layout only** to build the fixed inference template; future motion values are not fed to the flow model. The output `.npz` contains world-space human markers, object points and rigid pose, and a frame mask.
+This entry point takes the text and object geometry from one InterAct record, then samples the requested duration. It uses the record's encoded latent **layout only** to build the inference template; future motion values are not fed to the flow model. The output `.npz` contains world-space human markers, object points and rigid pose, and a frame mask. Reuse the variables defined in the training block, or set them to your existing run directories and whitening artifact in the current shell.
 
 ```bash
 python scripts/inference/sample.py \

@@ -37,14 +37,15 @@ def merge_stage1_source_model_contract(
     """Carry the exact Stage1 model/ablation contract into a downstream run config."""
 
     out = copy.deepcopy(config)
-    for section_name in ("model", "ablation"):
-        source_section = source_config.get(section_name)
-        if not isinstance(source_section, dict):
-            continue
-        downstream_section = out.get(section_name, {})
-        if not isinstance(downstream_section, dict):
-            downstream_section = {}
-        out[section_name] = deep_merge(source_section, downstream_section)
+    source_stage1 = source_config.get("model", {}).get("stage1")
+    if isinstance(source_stage1, dict):
+        out.setdefault("model", {})["stage1"] = copy.deepcopy(source_stage1)
+    source_ablation = source_config.get("ablation")
+    if isinstance(source_ablation, dict):
+        downstream_ablation = out.get("ablation", {})
+        if not isinstance(downstream_ablation, dict):
+            downstream_ablation = {}
+        out["ablation"] = deep_merge(source_ablation, downstream_ablation)
     return out
 
 

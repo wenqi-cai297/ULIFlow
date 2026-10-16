@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+
 import torch
 import pytest
 
@@ -216,6 +218,41 @@ def test_whitening_anchor_override_validation_reads_raw_payload_metadata(monkeyp
 def test_source_whitening_provenance_still_rejects_mismatch_without_anchor_override() -> None:
     with pytest.raises(ValueError, match="does not match source checkpoint provenance"):
         _validate_source_whitening_provenance({"whitening_artifact": "recorded.pt"}, "requested.pt")
+
+
+@pytest.mark.parametrize("same_path", [False, True])
+def test_source_whitening_hash_accepts_relocation_and_rejects_changed_bytes(tmp_path, same_path) -> None:
+    original = tmp_path / "original.pt"
+    original.write_bytes(b"verified whitening")
+    requested = original if same_path else tmp_path / "relocated.pt"
+    requested.write_bytes(original.read_bytes())
+    payload = {
+        "whitening_artifact": str(original),
+        "whitening_artifact_sha256": hashlib.sha256(original.read_bytes()).hexdigest(),
+    }
+    if not same_path:
+        original.unlink()
+    _validate_source_whitening_provenance(payload, requested)
+    requested.write_bytes(b"changed whitening")
+    with pytest.raises(ValueError, match="hash does not match"):
+        _validate_source_whitening_provenance(payload, requested)
+
+
+def test_legacy_source_whitening_provenance_uses_readable_original_for_relocation(tmp_path) -> None:
+    original = tmp_path / "original.pt"
+    relocated = tmp_path / "relocated.pt"
+    original.write_bytes(b"legacy whitening")
+    relocated.write_bytes(original.read_bytes())
+    payload = {"whitening_artifact": str(original)}
+    _validate_source_whitening_provenance(payload, original)
+    _validate_source_whitening_provenance(payload, relocated)
+    relocated.write_bytes(b"different whitening")
+    with pytest.raises(ValueError, match="does not match source checkpoint provenance"):
+        _validate_source_whitening_provenance(payload, relocated)
+    original.unlink()
+    with pytest.raises(ValueError, match="does not match source checkpoint provenance"):
+        _validate_source_whitening_provenance(payload, relocated)
+    _validate_source_whitening_provenance({}, relocated)
 
 
 def test_resume_source_artifacts_compare_stage1_anchor_override() -> None:

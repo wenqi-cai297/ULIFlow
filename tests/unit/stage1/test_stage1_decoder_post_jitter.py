@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 
 import torch
@@ -190,6 +191,8 @@ def test_decoder_post_module_registers_only_decoder_for_ddp_sync():
 
 def test_decoder_post_checkpoint_records_source_and_whitening(tmp_path):
     module, batch = _make_post_jitter_module(sigma_target=0.0)
+    whitening_path = tmp_path / "whitening.pt"
+    whitening_path.write_bytes(b"whitening artifact")
     cfg = {
         "training": {
             "stage1": {
@@ -227,7 +230,7 @@ def test_decoder_post_checkpoint_records_source_and_whitening(tmp_path):
         log_interval_steps=1,
         checkpoint_interval_steps=1,
         eval_interval_steps=1,
-        post_jitter_metadata=DecoderPostJitterMetadata("source/final.pt", "whitening.pt"),
+        post_jitter_metadata=DecoderPostJitterMetadata("source/final.pt", str(whitening_path)),
         structured_normalizer=_identity_normalizer(),
     )
 
@@ -243,10 +246,69 @@ def test_decoder_post_checkpoint_records_source_and_whitening(tmp_path):
 
     assert payload["post_training_phase"] == "decoder_post_jitter"
     assert payload["source_stage1_checkpoint"] == "source/final.pt"
-    assert payload["whitening_artifact"] == "whitening.pt"
+    assert payload["whitening_artifact"] == str(whitening_path)
+    expected_hash = hashlib.sha256(whitening_path.read_bytes()).hexdigest()
+    assert payload["whitening_artifact_sha256"] == expected_hash
+
+    relocated = tmp_path / "relocated.pt"
+    relocated.write_bytes(whitening_path.read_bytes())
+    trainer.post_jitter_metadata = DecoderPostJitterMetadata("source/final.pt", str(relocated))
+    trainer.load_checkpoint(path)
+    assert trainer.post_jitter_metadata.whitening_artifact_sha256 == expected_hash
+    relocated.write_bytes(b"different artifact")
+    with pytest.raises(ValueError, match="whitening artifact hash"):
+        trainer.load_checkpoint(path)
 
     new_module, _ = _make_post_jitter_module(sigma_target=0.0)
     load_component_state_dicts(new_module.stage1, payload["components"])
+
+
+def test_post_jitter_forwards_autocast_but_whitening_stays_fp32(tmp_path, monkeypatch):
+    module, batch = _make_post_jitter_module(sigma_target=0.125)
+    accelerator = Accelerator(cpu=True, mixed_precision="no")
+    monkeypatch.setattr(accelerator, "autocast", lambda: torch.autocast("cpu", dtype=torch.bfloat16))
+    optimizer = accelerator.prepare(torch.optim.AdamW(module.parameters(), lr=1.0e-4))
+    state = Stage1Phase1TrainState(
+        accelerator=accelerator,
+        model=module,
+        loss_fn=module.loss_fn,
+        optimizer=optimizer,
+        scheduler=None,
+        global_step=0,
+        epoch=0,
+    )
+    trainer = Stage1DecoderPostJitterTrainer(
+        state=state,
+        run_dir=tmp_path,
+        resolved_config={},
+        log_interval_steps=100,
+        post_jitter_metadata=DecoderPostJitterMetadata("unused", "unused"),
+        structured_normalizer=_identity_normalizer(),
+        fixed_t3_sigmas=[0.125],
+    )
+    decoder_dtypes = []
+    projection = next(child for child in module.decoder.modules() if isinstance(child, torch.nn.Linear))
+    projection.register_forward_hook(lambda child, args, output: decoder_dtypes.append(output.dtype))
+    whitening_calls = []
+
+    def spy_transform(method):
+        def checked(values, mask):
+            assert not torch.is_autocast_enabled("cpu")
+            assert values.dtype == torch.float32
+            result = method(values, mask)
+            assert result.dtype == torch.float32
+            whitening_calls.append(method.__name__)
+            return result
+        return checked
+
+    monkeypatch.setattr(module.whitening, "whiten", spy_transform(module.whitening.whiten))
+    monkeypatch.setattr(module.whitening, "unwhiten", spy_transform(module.whitening.unwhiten))
+    assert torch.isfinite(trainer.train_step(batch).total)
+    assert torch.isfinite(trainer.eval_step(batch).total)
+    assert trainer._t3_robustness_metrics(batch)["T3_drift_at_0.125_cm"] >= 0.0
+    assert decoder_dtypes == [torch.bfloat16] * 4
+    assert whitening_calls.count("whiten") == 3
+    assert whitening_calls.count("unwhiten") == 3
 
 
 def test_decoder_post_loss_builder_uses_structured_normalizer():
@@ -408,6 +470,8 @@ def test_decoder_post_t3_robustness_metrics_emit_best_checkpoint_key():
 
 def test_decoder_post_evaluate_averages_t3_over_configured_batches(tmp_path):
     module, batch = _make_post_jitter_module(sigma_target=0.0)
+    whitening_path = tmp_path / "whitening.pt"
+    whitening_path.write_bytes(b"whitening artifact")
     cfg = {
         "training": {
             "stage1": {
@@ -440,7 +504,7 @@ def test_decoder_post_evaluate_averages_t3_over_configured_batches(tmp_path):
         log_interval_steps=1,
         checkpoint_interval_steps=1,
         eval_interval_steps=1,
-        post_jitter_metadata=DecoderPostJitterMetadata("source/final.pt", "whitening.pt"),
+        post_jitter_metadata=DecoderPostJitterMetadata("source/final.pt", str(whitening_path)),
         structured_normalizer=_identity_normalizer(),
         fixed_t3_sigmas=[0.125],
         t3_eval_batches=2,

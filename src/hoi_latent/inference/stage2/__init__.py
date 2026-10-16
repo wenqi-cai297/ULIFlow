@@ -22,13 +22,10 @@ from hoi_latent.inference.stage2.decode_render import (
     compute_overlap_candidate_disagreement,
     compute_stage2_stitch_boundary_diagnostics,
     decode_stage2_z_white_windows,
-    map_xyz_for_render,
     object_points_world,
     prediction_to_world_markers_and_object_points,
-    render_stage2_marker_comparison_mp4,
     rot6d_to_matrix_np,
     stitch_stage1_predictions_preferred_slot,
-    write_stage2_render_summary,
 )
 from hoi_latent.inference.stage2.latent_template import (
     Stage2InferenceLatentTemplate,
@@ -65,13 +62,10 @@ __all__ = [
     "decode_stage2_z_white_windows",
     "extract_stage2_inference_latent_template_spec",
     "guided_velocity",
-    "map_xyz_for_render",
     "object_points_world",
     "prediction_to_world_markers_and_object_points",
-    "render_stage2_marker_comparison_mp4",
     "rot6d_to_matrix_np",
     "sample_stage2_flow_forcing_rollout",
     "stitch_stage1_predictions_preferred_slot",
     "validate_stage2_template_content_independence",
-    "write_stage2_render_summary",
 ]

@@ -12,6 +12,7 @@ from typing import Any, Iterable
 
 import torch
 from accelerate import Accelerator
+from accelerate.utils import set_seed
 
 from hoi_latent.config.io import load_yaml, save_yaml
 from hoi_latent.config.stage1_anchor_overrides import apply_stage1_anchor_override
@@ -614,6 +615,7 @@ def run_stage2_rectified_flow_training(
         train_config_path,
         overrides=overrides,
     )
+    set_seed(int(resolved_config.get("seed", 42)), device_specific=False)
     train_cfg = _stage2_train_cfg(resolved_config)
     stage1_anchor_override = apply_stage1_anchor_override(
         resolved_config,
@@ -689,7 +691,7 @@ def run_stage2_rectified_flow_training(
     _validate_whitening_matches_stage2(whitening, resolved_config)
     if stage1_anchor_override:
         _validate_whitening_anchor_override(Path(whitening_path), stage1_anchor_override)
-    else:
+    if not stage1_anchor_override or source_payload.get("whitening_artifact_sha256") is not None:
         _validate_source_whitening_provenance(source_payload, whitening_path)
 
     stage2_model = build_stage2_tri_stream_mot_model_from_config(resolved_config)
@@ -1256,10 +1258,19 @@ def _validate_whitening_matches_stage2(whitening: Stage1LatentWhiteningTransform
 
 
 def _validate_source_whitening_provenance(source_payload: dict[str, Any], whitening_path: str | Path) -> None:
+    recorded_hash = source_payload.get("whitening_artifact_sha256")
+    if recorded_hash is not None:
+        if _sha256_path(Path(whitening_path)) != recorded_hash:
+            raise ValueError("Stage2 whitening artifact hash does not match source checkpoint provenance.")
+        return
     recorded = source_payload.get("whitening_artifact")
     if recorded is None:
         return
     if Path(str(recorded)).resolve() != Path(whitening_path).resolve():
+        # Legacy checkpoints can prove relocation only while the original is readable.
+        original = Path(str(recorded))
+        if original.is_file() and _sha256_path(original) == _sha256_path(Path(whitening_path)):
+            return
         raise ValueError(
             "Stage2 whitening artifact does not match source checkpoint provenance:\n"
             f"  source checkpoint records: {recorded}\n"
