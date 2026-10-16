@@ -1,0 +1,135 @@
+# Stage2 RF config for the formal full-MoT Stage1 post-jitter source.
+# Pass --source-run, --source-ckpt, and --whitening on the CLI. Do not pass
+# --stage1-anchor-* unless that whitening artifact was fit with the same
+# anchor override metadata.
+# Text is cleaned in InterActStage1Dataset via clean_interact_caption(...).
+loader:
+  batch_size: 16
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+
+data:
+  load_text: true
+  text_filter:
+    enabled: true
+    tokenizer: google/flan-t5-xl
+    max_tokens: 77
+    add_special_tokens: true
+    require_text: true
+  load_object_bps: true
+  return_raw_motion: true
+  return_structured: true
+  structured:
+    enabled: true
+    require_object_geometry: true
+
+model:
+  stage2:
+    d_model: 384
+    latent_dim: 16
+    depth: 12
+    num_heads: 6
+    head_dim: 64
+    mlp_ratio: 4
+    dropout: 0.0
+    qk_norm: true
+    attention:
+      mode: block_causal
+      qkvo_routing: shared_plus_delta
+      route_delta_gamma_init: 0.0
+    final_head:
+      adaln: true
+      zero_init_velocity: true
+    text:
+      backend: t5_encoder
+      backbone: google/flan-t5-xl
+      freeze_text_encoder: true
+      encoder_dtype: bf16
+      max_seq_len: 77
+      contextualizer_depth: 2
+      contextualizer_dropout: 0.0
+      null_prompt: ""
+    geometry:
+      max_bps_points: 1024
+      num_geometry_tokens: 16
+      allow_missing_bps: true
+    latent:
+      use_latent_substream_embedding: false
+
+training:
+  stage2:
+    phase: flow_forcing
+    run_name: stage2_ff1_full_mot_post_jitter_flan_t5_xl_v0
+    output_root: runs/training/stage2
+
+    max_steps: 110000
+    checkpoint_interval_steps: 5000
+    log_interval_steps: 50
+    validate_first_batch: true
+    best_checkpoint_metric: eval/rf_mse
+    best_checkpoint_mode: min
+
+    flow_forcing:
+      dynamic_noise_schedule: random_all_blocks
+      static_time_policy: independent_static
+      block_size_anchors: 8
+
+    optimizer:
+      type: adamw
+      lr: 1.0e-4
+      weight_decay: 1.0e-2
+      betas: [0.9, 0.95]
+
+    scheduler:
+      type: warmup_constant_cooldown
+      warmup_steps: 2000
+      cooldown_start_step: 100000
+      cooldown_steps: 10000
+      cooldown_type: cosine
+      final_lr: 1.0e-5
+
+    grad_clip_norm: 1.0
+
+    accelerate:
+      mixed_precision: bf16
+      gradient_accumulation_steps: 2
+      log_with: wandb
+
+    wandb:
+      enabled: true
+      project: uliflow
+      entity: null
+      mode: offline
+      tags:
+        - stage2
+        - flow_forcing
+        - tri_stream_mot
+        - full_mot_reference
+        - decoder_post_jitter
+        - clean_text
+        - flan_t5_xl
+        - formal_A_source
+
+    condition_dropout:
+      both: 0.70
+      text_only: 0.10
+      geometry_only: 0.10
+      none: 0.10
+
+    ema:
+      enabled: true
+      decay: 0.9999
+      warmup: true
+
+evaluation:
+  stage2:
+    velocity:
+      interval_steps: 1000
+      max_batches: 20
+      fixed_noise_seed: 12345
+
+loss:
+  stage2:
+    rectified_flow:
+      type: masked_velocity_mse

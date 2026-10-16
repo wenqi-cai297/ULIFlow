@@ -1,0 +1,96 @@
+data:
+  root: "data/InterAct_official_combination"
+  datasets:
+    - behave
+    - intercap
+    - grab
+    - chairs
+    - imhd
+    - neuraldome
+    - omomo_correct_v2
+  exclude_datasets:
+    - omomo
+  representation: interact_motion_962
+
+  window_size: 128
+  train_window_mode: random
+  eval_window_mode: center
+  pad_short_sequences: true
+
+  load_text: true
+  load_object_points: true
+  load_object_bps: true
+  return_raw_motion: true
+  return_structured: true
+
+  structured:
+    enabled: true
+    require_object_geometry: true
+    root_method: marker_mean
+    marker_part_map_path: assets/interact/marker_part_map_v1.json
+    object_geometry_cache_size: 256
+
+    relation:
+      use_official_nearest_relation: true
+      expose_both_delta_signs: true
+      include_distance: true
+      include_dynamics: true
+      include_nearest_point_world: true
+      include_root_object_global: true
+
+    normalization:
+      enabled: true
+      mode: compute_if_missing
+      cache_path: caches/datasets/interact_stage1/interact_stage1_structured_v1_stats
+
+    cache:
+      enabled: false
+      mode: off
+      root: caches/datasets/interact_stage1/structured_v1
+
+split:
+  test_seq_file: "assets/interact/test_seq.txt"
+  use_official_test_seq: true
+  val_ratio_from_train: 0.05
+  val_hash_seed: 42
+
+normalization:
+  eps: 1.0e-6
+  mode: compute_if_missing
+  cache_path: "caches/datasets/interact_stage1/interact_motion962_all_v0"
+
+loader:
+  batch_size: 8
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+
+model:
+  stage1:
+    d_model: 256
+    num_heads: 4
+    max_seq_len: 128
+    num_marker_parts: 100
+    num_relation_types: 2
+    dropout: 0.0
+
+    tokenizers:
+      human:
+        num_body_slots: 8
+        use_marker_part_bias: true
+        include_official_vel: false
+
+      object:
+        num_geometry_slots: 4
+        geometry_source: bps
+        max_bps_points: 1024
+        include_official_vel9: true
+        use_object_id_embedding: false
+
+      relation:
+        num_relation_slots: 8
+        use_proximity_bias: true
+        use_relation_part_bias: true
+        use_raw_distance_for_bias: true
+
+seed: 42

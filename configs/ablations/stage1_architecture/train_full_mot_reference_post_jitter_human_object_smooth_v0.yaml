@@ -1,0 +1,98 @@
+# Merge with the same data config used by train_full_mot_reference_v0.yaml.
+# Decoder-only post-train for Variant A / Ours:
+#   frozen tokenizer + encoder
+#   whitened latent jitter
+#   decoder optimized with reconstruction + human/object finite-difference smooth losses
+loader:
+  batch_size: 6
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+
+training:
+  stage1:
+    phase: decoder_post_jitter
+    run_name: full_mot_reference_v0_post_jitter_human_object_smooth
+    output_root: runs/ablations/stage1_architecture
+
+    max_steps: 30000
+    eval_interval_steps: 1000
+    checkpoint_interval_steps: 5000
+    save_periodic_step_checkpoints: false
+    log_interval_steps: 50
+    max_eval_batches: 20
+    best_checkpoint_metric: eval/T3_drift_at_0.125_cm
+    best_checkpoint_mode: min
+
+    optimizer:
+      type: adamw
+      lr: 2.0e-5
+      weight_decay: 1.0e-4
+      betas: [0.9, 0.95]
+
+    scheduler:
+      type: warmup_cosine
+      warmup_steps: 500
+      min_lr: 5.0e-6
+
+    grad_clip_norm: 1.0
+
+    accelerate:
+      mixed_precision: bf16
+      gradient_accumulation_steps: 1
+      log_with: wandb
+
+    wandb:
+      enabled: true
+      project: uliflow
+      entity: null
+      mode: offline
+      tags: [stage1, ablation, architecture, full_mot_reference, ours, decoder_post_jitter, whitened_jitter, object_smooth, human_smooth]
+
+    decoder_post_jitter:
+      validate_first_batch: true
+      return_diagnostics_interval_steps: 1000
+      sigma_white_target: 0.125
+      sigma_warmup_steps: 2000
+      sigma_ramp_end_step: 20000
+      clean_probability: 0.25
+      t3_eval_batches: 4
+      fixed_t3_sigmas: [0.05, 0.10, 0.125, 0.15, 0.20]
+
+loss:
+  stage1:
+    decoder_post_jitter:
+      lambda_human: 1.0
+      lambda_object: 1.0
+      lambda_relation: 2.0
+      lambda_world_marker: 1.0
+      smooth_l1_beta: 1.0
+      world_marker_error_scale_m: 0.05
+      world_marker_smooth_l1_beta: 1.0
+
+      lambda_object_world_points: 0.0
+      object_world_point_error_scale_m: 0.05
+      object_world_point_smooth_l1_beta: 1.0
+      lambda_object_fd_velocity: 0.5
+      lambda_object_fd_acceleration: 0.25
+      object_fd_velocity_error_scale_m: 0.05
+      object_fd_acceleration_error_scale_m: 0.02
+      object_fd_smooth_l1_beta: 1.0
+
+      lambda_human_fd_velocity: 0.5
+      lambda_human_fd_acceleration: 0.25
+      human_fd_velocity_error_scale_m: 0.05
+      human_fd_acceleration_error_scale_m: 0.02
+      human_fd_smooth_l1_beta: 1.0
+
+ablation:
+  name: stage1_architecture
+  variant: full_mot_reference
+  full_mot_reference:
+    role: reference_control_post_train
+    architecture: production_mot_no_refiner
+    tokenizer: frozen_production
+    encoder: frozen_production_mot_ffn_only
+    decoder: post_trained_with_whitened_latent_jitter
+    refiner: removed
+    route_decoupling: ffn_only

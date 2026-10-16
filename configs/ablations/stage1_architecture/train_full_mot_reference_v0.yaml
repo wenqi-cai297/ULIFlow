@@ -1,0 +1,84 @@
+# Merge with configs/stage1/data_interact_motion962_all_v0.yaml.
+# Variant A / Ours: production MoT tokenizer/encoder/decoder layout with
+# Refiner removed. This is the reference/control row for B/C architecture
+# ablations and should be trained with the same loss, optimizer, schedule,
+# logging, and checkpoint protocol as the ablation variants.
+loader:
+  batch_size: 8
+  num_workers: 0
+  pin_memory: false
+  persistent_workers: false
+
+training:
+  stage1:
+    phase: stage1_architecture_ablation
+    run_name: full_mot_reference_v0
+    output_root: runs/ablations/stage1_architecture
+
+    max_steps: 100000
+    eval_interval_steps: 1000
+    checkpoint_interval_steps: 5000
+    save_periodic_step_checkpoints: false
+    log_interval_steps: 50
+    max_eval_batches: 20
+    best_checkpoint_metric: eval/loss.total
+    best_checkpoint_mode: min
+
+    optimizer:
+      type: adamw
+      lr: 1.0e-4
+      weight_decay: 1.0e-4
+      betas: [0.9, 0.95]
+
+    scheduler:
+      type: warmup_cosine
+      warmup_steps: 2000
+      min_lr: 1.0e-5
+
+    grad_clip_norm: 1.0
+
+    accelerate:
+      mixed_precision: bf16
+      gradient_accumulation_steps: 1
+      log_with: wandb
+
+    wandb:
+      enabled: true
+      project: uliflow
+      entity: null
+      mode: offline
+      tags: [stage1, ablation, architecture, full_mot_reference, ours]
+
+    phase1_warmup:
+      validate_first_batch: true
+      return_diagnostics_interval_steps: 1000
+
+loss:
+  stage1:
+    phase1_warmup:
+      lambda_human: 1.0
+      lambda_object: 1.0
+      lambda_relation: 2.0
+      lambda_world_marker: 1.0
+      lambda_latent_cov_floor: 1.0e-2
+      smooth_l1_beta: 1.0
+      world_marker_error_scale_m: 0.05
+      world_marker_smooth_l1_beta: 1.0
+      latent_cov_start_step: 10000
+      latent_cov_end_step: 30000
+
+ablation:
+  name: stage1_architecture
+  variant: full_mot_reference
+  full_mot_reference:
+    role: reference_control
+    architecture: production_mot_no_refiner
+    tokenizer: production
+    encoder: production_mot_ffn_only
+    decoder: production
+    refiner: removed
+    route_decoupling: ffn_only
+    latent_capacity:
+      n_latent: 708
+      z_dim: 16
+      capacity: 11328
