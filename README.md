@@ -1,6 +1,8 @@
 # ULIFlow
 
-ULIFlow generates variable-length human-object interaction motion from text and object geometry. This repository contains the core Stage 1 MoT autoencoder, latent whitening and decoder post-training, the Stage 2 conditional flow model, dataset-conditioned inference, and the evaluation code needed to inspect generated motion. It is a clean code release: no dataset, pretrained weights, checkpoints, generated samples, W&B credentials, or third-party baseline implementations are included.
+We introduce **ULIFlow**, a text-conditioned generative method that jointly models human motion and rigid-object dynamics in a unified, structured latent space. By explicitly learning continuous relations between body-surface markers and objects, ULIFlow captures interaction coordination directly from data without hand-crafted contact priors or interaction pseudo-labels.
+
+To accommodate varying interaction durations, ULIFlow combines blockwise flow forcing with sequence-progress conditioning, allowing generation to continue beyond fixed training windows. Given a textual description and object geometry, it jointly generates human and object sequences at the requested length while maintaining coherent interaction and semantic consistency.
 
 ## Requirements
 
@@ -85,7 +87,3 @@ python scripts/evaluation/stage2/evaluate_flow_forcing_quantitative.py \
 ```
 
 FID, retrieval precision, and other official-comparable feature metrics additionally require the InterAct Markers+BPS evaluator artifacts, which are not redistributed here. Place them under `assets/evaluation/interact_markersbps/`, use `--feature-evaluator-mode official_artifact`, and run the evaluator's parity and split checks before reporting those metrics. The local diagnostic command above is **not** a reproduction of the paper's official metric table.
-
-## Scope
-
-`src/hoi_latent/` contains reusable model, data, loss, training, inference, and evaluation code; `scripts/` contains runnable entry points. `tests/` covers the released pipeline. Research-only ablations, visualization polishing, third-party adapters, paper assets, and private experimental outputs are intentionally omitted. Keep downloaded data, evaluator artifacts, credentials, and all generated results out of Git.
